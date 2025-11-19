@@ -4,13 +4,17 @@
 #include<string.h>
 #include<unistd.h> //Para a funcao sleep
 #include<stdbool.h>
+#include <windows.h>
+
+
 typedef struct {//struct de jogador
     char nome[80];
     int pontos;
 }Player;
+int pontuacao = 100;
+//FUNCOES DE LOGIN/CRIACAO DE PLAYERS
 
-//Funcao de posicao livre
-int acha_pos(Player players[], int tamanho) {
+int acha_pos(Player players[], int tamanho) {//Funcao de posicao livre na struct
     for (int i = 1; i < tamanho; i++) {
         if (players[i].nome[0] == '\0') {
             return i; // posição vazia
@@ -19,8 +23,7 @@ int acha_pos(Player players[], int tamanho) {
     return -1; // cheio
 }
 
-//Funcao que adiciona player
-void addPlayer(Player players[], int tamanho) {
+void addPlayer(Player players[], int tamanho) {//Funcao que adiciona player
     int pos = acha_pos(players, tamanho);
     if (pos == -1) {
         printf("Lista cheia!\n");
@@ -35,8 +38,7 @@ void addPlayer(Player players[], int tamanho) {
     fclose(lista);
 }
 
-//Funcao de login
-void login(){
+void login(){//Funcao de login (Verifica se existe algum player com o nome escrito)
     FILE *lista= fopen("lista.txt","r");
 
     Player players[11]={0};
@@ -67,23 +69,31 @@ void login(){
     addPlayer(players, 11);
     }
 }
+//--------------------------------------------------------------------------------------------//
 
+//Variaveis para inicializar as cartas
 char *simbols={"ZWXP@$C#89F2HGM"}; // Simbolos que vao aparecer nas cartas
-char **cartas; //Ponteiro para ponteiro que vai virar uma matriz
+char **cartas, **verify; //Ponteiro para ponteiro que vai virar uma matriz
 
+//------------------------------------------------------------------------------------------//
 
+//FUNCOES QUE ARMAZENAM E GERAM AS CARTAS
 
-void armazena(int tam, const char *simbols){
+void armazena(int tam, const char *simbols){//Funcao que armazena as cartas em posicoes
+                                            // aleatorias da matriz
 
+   verify = malloc(tam * sizeof(char*));
    cartas = malloc(tam * sizeof(char*));// Transforma o ponteiro para ponteiro em vetor
    for(int i =0; i < tam; i++){
         cartas[i] = malloc(tam * sizeof(char)); //Transforma o vetor em matriz
+        verify[i] = malloc(tam * sizeof(char));
    }
 
    //Inicializando a matriz com ?
    for(int i = 0; i < tam; i++){
     for(int j = 0; j < tam; j++){
         cartas[i][j] = '?';
+        verify[i][j] = '!';
     }
    }
 
@@ -137,7 +147,68 @@ void geracartas(int tam, char *simbols){ //Funcao que gera as cartas
     }
 }
 
+void atualizapontos(int valor,  Player players){
+    if(valor) return;
+    else{
+        players[0].pontos -= 10;
+        pontuacao -= 10;
+        
+    }
+}
+//-------------------------------------------------------------------------------------------//
+//FUNCOES PARA A ESCOLHA E VERIFICACAO DE CARTAS
 
+int verificacartas(int tam){ // Verificando posicoes
+    int cont=0;
+    for(int i = 0; i < tam; i++){
+        for(int j=0; j < tam; j++){
+            if(verify[i][j] == cartas[i][j]){
+                cont++;
+            }
+        }
+    }
+    for(int i = 0; i < tam; i++){ //Reinicializando para nao dar conflito
+        for(int j = 0; j < tam; j++){
+            verify[i][j] = '!';
+        }
+    }
+    if(cont == 2) return 1;
+    else return 0;
+
+}
+void habilitarANSI() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD modo = 0;
+    GetConsoleMode(hOut, &modo);
+    modo |= 0x0004;
+    SetConsoleMode(hOut, modo);
+}
+void escolhecarta(int tam){//Funcao que possibilita o usuario escolher a carta
+    Player players;
+    habilitarANSI();
+int x=0, y=0;
+char c;
+for(int i=0 ;i < 2; i++){
+    while (1) {
+    c = getchar();  // sem precisar apertar Enter
+
+    if (c == 'w' && y > 0) y--;
+    if (c == 's' && y < tam-1) y++;
+    if (c == 'a' && x > 0) x--;
+    if (c == 'd' && x < tam-1) x++;
+
+    if (c == '\r') {  // Enter
+        if(verify[y][x] != '!'){
+            continue;
+        }
+        verify[y][x] = cartas[y][x];
+        break;
+    }
+
+    }
+}
+atualizapontos(verificacartas(tam), players.pontos);
+}
 
 void dificuldade(){ //Funcao para o usuario escolher o nivel de jogo
     int modo;
@@ -157,6 +228,7 @@ void dificuldade(){ //Funcao para o usuario escolher o nivel de jogo
     switch(modo){
         case 1:
         geracartas(4, simbols);
+        escolhecarta(4);
         break;
 
         case 2:
@@ -180,9 +252,6 @@ void dificuldade(){ //Funcao para o usuario escolher o nivel de jogo
 
 }
 
-void escolhecarta(){
-    
-}
 
 int main(){
    struct player;
@@ -201,7 +270,6 @@ int main(){
         getchar(); // Evitar problemas com o buffer \n
         login();
         dificuldade();
-        escolhecarta();
         break;
         case 2:
         printf("Chamar modo 2 jogdores");
