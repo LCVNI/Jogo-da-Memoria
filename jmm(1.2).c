@@ -5,7 +5,7 @@
 #include<unistd.h> //Para a funcao sleep
 #include<stdbool.h>
 //#include <windows.h>
-
+//Raylib
 
 typedef struct {//struct de jogador
     char nome[80];
