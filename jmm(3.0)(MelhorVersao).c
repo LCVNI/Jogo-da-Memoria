@@ -1,519 +1,789 @@
-#include<stdio.h>
-#include<stdlib.h>
-#include<time.h>
-#include<string.h>
-#include<unistd.h>
-#include<stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <stdbool.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #define LIMPAR "cls"
+    #define SLEEP(x) Sleep((x)*1000)
+#else
+    #include <unistd.h>
+    #define LIMPAR "clear"
+    #define SLEEP(x) sleep(x)
+#endif
+
+// ==================== ESTRUTURAS ====================
 
 typedef struct {
     char nome[80];
     int pontos;
+    int paresEncontrados;
 } Player;
 
-// Variáveis globais para as cartas
-char *simbols = "ZWXP@$C#89F2HGM";
-char **cartas, **msave;
+typedef struct {
+    char nomeJogador[80];
+    int pontos;
+    int paresEncontrados;
+    int tamanho;
+    char tabuleiro[10][10];    // Cartas reais
+    char visivelSave[10][10];  // Estado visivel
+} SaveGame;
 
-// FUNÇÕES DE ARQUIVO E LOGIN
+// ==================== VARIAVEIS GLOBAIS ====================
 
-void addPlayer(Player *player) {
-    FILE *lista = fopen("lista.txt", "a");
-    if (!lista) {
-        printf("Erro ao abrir arquivo!\n");
-        return;
-    }
-    
-    printf("Nome do novo jogador: ");
-    fgets(player->nome, sizeof(player->nome), stdin);
-    player->nome[strcspn(player->nome, "\n")] = '\0';
-    player->pontos = 0;
-    
-    fprintf(lista, "%s %d\n", player->nome, player->pontos);
-    fclose(lista);
-    printf("Jogador criado com sucesso!\n");
+char *simbolos = "ZWXP@$C#89F2HGM";
+char **cartas;      // Tabuleiro com as respostas
+char **visivel;     // O que o jogador ve
+
+// ==================== DECLARACOES ANTECIPADAS ====================
+
+void criarTabuleiro(int tam);
+void destruirTabuleiro(int tam);
+
+// ==================== FUNCOES AUXILIARES ====================
+
+// Le uma linha inteira e remove o \n
+void lerLinha(char *buffer, int tamanho) {
+    fgets(buffer, tamanho, stdin);
+    buffer[strcspn(buffer, "\n")] = '\0';
 }
 
-Player login() {
-    Player player;
-    FILE *lista = fopen("lista.txt", "r");
-    
-    printf("=== BEM-VINDO AO JOGO DA MEMORIA ===\n");
-    printf("Nome de Jogador: ");
-    fgets(player.nome, sizeof(player.nome), stdin);
-    player.nome[strcspn(player.nome, "\n")] = '\0';
-    
-    if (!lista) {
-        printf("Arquivo não encontrado. Criando novo jogador...\n");
-        player.pontos = 0;
-        addPlayer(&player);
-        return player;
+// Le um numero inteiro
+int lerInt() {
+    char buffer[100];
+    lerLinha(buffer, sizeof(buffer));
+    return atoi(buffer);
+}
+
+// Pausa ate pressionar ENTER
+void pausar() {
+    printf("\nPressione ENTER para continuar...");
+    getchar();
+}
+
+// ==================== FUNCOES DE SAVE/LOAD ====================
+
+// Verifica se existe um save
+bool existeSave() {
+    FILE *f = fopen("savegame.dat", "rb");
+    if (f) {
+        fclose(f);
+        return true;
     }
+    return false;
+}
+
+// Salva o estado atual do jogo
+void salvarJogo(Player *jogador, int tam) {
+    SaveGame save;
+    
+    strcpy(save.nomeJogador, jogador->nome);
+    save.pontos = jogador->pontos;
+    save.paresEncontrados = jogador->paresEncontrados;
+    save.tamanho = tam;
+    
+    // Copia os tabuleiros
+    for (int i = 0; i < tam; i++) {
+        for (int j = 0; j < tam; j++) {
+            save.tabuleiro[i][j] = cartas[i][j];
+            save.visivelSave[i][j] = visivel[i][j];
+        }
+    }
+    
+    FILE *f = fopen("savegame.dat", "wb");
+    if (f) {
+        fwrite(&save, sizeof(SaveGame), 1, f);
+        fclose(f);
+        printf("\nJogo salvo com sucesso!\n");
+    } else {
+        printf("\nErro ao salvar o jogo!\n");
+    }
+}
+
+// Carrega o jogo salvo
+bool carregarJogo(Player *jogador, int *tam) {
+    FILE *f = fopen("savegame.dat", "rb");
+    if (!f) {
+        return false;
+    }
+    
+    SaveGame save;
+    if (fread(&save, sizeof(SaveGame), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    
+    // Restaura dados do jogador
+    strcpy(jogador->nome, save.nomeJogador);
+    jogador->pontos = save.pontos;
+    jogador->paresEncontrados = save.paresEncontrados;
+    *tam = save.tamanho;
+    
+    // Cria os tabuleiros
+    criarTabuleiro(*tam);
+    
+    // Restaura o estado dos tabuleiros
+    for (int i = 0; i < *tam; i++) {
+        for (int j = 0; j < *tam; j++) {
+            cartas[i][j] = save.tabuleiro[i][j];
+            visivel[i][j] = save.visivelSave[i][j];
+        }
+    }
+    
+    return true;
+}
+
+// Deleta o save
+void deletarSave() {
+    remove("savegame.dat");
+}
+
+// ==================== FUNCOES DE ARQUIVO ====================
+
+// Carrega ou cria um jogador
+Player carregarJogador(const char *nome) {
+    Player p;
+    strcpy(p.nome, nome);
+    p.pontos = 0;
+    p.paresEncontrados = 0;
+    
+    FILE *f = fopen("lista.txt", "r");
+    if (f) {
+        char nomeLido[80];
+        int pontosLido;
+        
+        while (fscanf(f, "%79s %d", nomeLido, &pontosLido) == 2) {
+            if (strcmp(nome, nomeLido) == 0) {
+                p.pontos = pontosLido;
+                printf("\nBem-vindo de volta, %s!\n", nome);
+                printf("Seu recorde: %d pontos\n", pontosLido);
+                fclose(f);
+                return p;
+            }
+        }
+        fclose(f);
+    }
+    
+    printf("\nNovo jogador criado: %s\n", nome);
+    return p;
+}
+
+// Salva recorde do jogador
+void salvarRecorde(Player *p) {
+    FILE *f = fopen("lista.txt", "r");
+    FILE *temp = fopen("temp.txt", "w");
+    
+    if (!temp) return;
     
     char nomeLido[80];
     int pontosLido;
     bool encontrado = false;
     
-    while (fscanf(lista, "%79s %d", nomeLido, &pontosLido) == 2) {
-        if (strcmp(player.nome, nomeLido) == 0) {
-            printf("\nBem-vindo de volta, %s!\n", nomeLido);
-            printf("Seu recorde atual: %d pontos\n\n", pontosLido);
-            player.pontos = pontosLido;
-            encontrado = true;
-            break;
+    if (f) {
+        while (fscanf(f, "%79s %d", nomeLido, &pontosLido) == 2) {
+            if (strcmp(p->nome, nomeLido) == 0) {
+                if (p->pontos > pontosLido) {
+                    fprintf(temp, "%s %d\n", p->nome, p->pontos);
+                    printf("\n*** NOVO RECORDE! %d -> %d pontos ***\n", pontosLido, p->pontos);
+                } else {
+                    fprintf(temp, "%s %d\n", nomeLido, pontosLido);
+                }
+                encontrado = true;
+            } else {
+                fprintf(temp, "%s %d\n", nomeLido, pontosLido);
+            }
         }
+        fclose(f);
     }
-    
-    fclose(lista);
     
     if (!encontrado) {
-        printf("Nenhum jogador encontrado com esse nome.\n");
-        player.pontos = 0;
-        addPlayer(&player);
+        fprintf(temp, "%s %d\n", p->nome, p->pontos);
     }
     
-    return player;
+    fclose(temp);
+    remove("lista.txt");
+    rename("temp.txt", "lista.txt");
 }
 
-// FUNÇÕES DE MANIPULAÇÃO DE CARTAS
-
-void armazenaCartas(int tam, const char *simbols) {
-    cartas = malloc(tam * sizeof(char*));
-    msave = malloc(tam * sizeof(char*));
-    
-    for(int i = 0; i < tam; i++) {
-        cartas[i] = malloc(tam * sizeof(char));
-        msave[i] = malloc(tam * sizeof(char));
-    }
-    
-    // Inicializa as matrizes
-    for(int i = 0; i < tam; i++) {
-        for(int j = 0; j < tam; j++) {
-            cartas[i][j] = '?';
-            msave[i][j] = '?';
-        }
-    }
-    
-    // Preenche com símbolos aleatórios em pares
-    unsigned int idx = 0;
-    srand(time(NULL));
-    
-    for(int i = 0; i < tam; i++) {
-        for(int j = 0; j < tam; j++) {
-            int r1, r2;
-            do {
-                r1 = rand() % tam;
-                r2 = rand() % tam;
-            } while(cartas[r1][r2] != '?');
-            
-            if(idx >= strlen(simbols)) {
-                idx = 0;
-            }
-            
-            cartas[r1][r2] = simbols[idx];
-            
-            if ((i * tam + j) % 2 == 1) {
-                idx++;
-            }
-        }
-    }
-}
-
-void mostraTabuleiro(int tam, int pontos) {
-    system("cls");
-    
-    printf("\n=== JOGO DA MEMORIA ===\n");
-    printf("Pontos: %d\n\n", pontos);
-    
-    // Cabeçalho com números das colunas
-    printf("   ");
-    for(int j = 0; j < tam; j++) {
-        printf(" %d ", j);
-    }
-    printf("\n");
-    
-    // Linhas com letras e cartas
-    for(int i = 0; i < tam; i++) {
-        printf("%c  ", 'a' + i);
-        for(int j = 0; j < tam; j++) {
-            printf("[%c]", msave[i][j]);
-        }
-        printf("\n");
-    }
-    printf("\n");
-}
-
-void liberaMemoria(int tam) {
-    for(int i = 0; i < tam; i++) {
-        free(cartas[i]);
-        free(msave[i]);
-    }
-    free(cartas);
-    free(msave);
-}
-
-// FUNÇÕES DO JOGO
-
-void inicializaJogo(int tam) {
-    armazenaCartas(tam, simbols);
-    
-    printf("\n=== MEMORIZE AS CARTAS! ===\n\n");
-    
-    // Mostra todas as cartas
-    printf("   ");
-    for(int j = 0; j < tam; j++) {
-        printf(" %d ", j);
-    }
-    printf("\n");
-    
-    for(int i = 0; i < tam; i++) {
-        printf("%c  ", 'a' + i);
-        for(int j = 0; j < tam; j++) {
-            printf("[%c]", cartas[i][j]);
-        }
-        printf("\n");
-    }
-    
-    // Contador regressivo
-    printf("\n");
-    for(int i = 3; i > 0; i--) {
-        printf("\rEscondendo em %d...", i);
-        fflush(stdout);
-        sleep(1);
-    }
-    printf("\rEscondendo em 0...\n");
-    sleep(1);
-}
-
-int converteLetra(char c) {
-    if(c >= 'a' && c <= 'z') return c - 'a';
-    if(c >= 'A' && c <= 'Z') return c - 'A';
-    return -1;
-}
-
-int turno(Player *jogador, int tam) {
-    int lin1, col1, lin2, col2;
-    char letraLin;
-    
-    // === ESCOLHE PRIMEIRA CARTA ===
-    while(1) {
-        mostraTabuleiro(tam, jogador->pontos);
-        printf("%s, escolha a PRIMEIRA carta:\n", jogador->nome);
-        printf("Linha (a-%c): ", 'a' + tam - 1);
-        scanf(" %c", &letraLin);
-        printf("Coluna (0-%d): ", tam - 1);
-        scanf("%d", &col1);
-        
-        lin1 = converteLetra(letraLin);
-        
-        // Validações
-        if(lin1 < 0 || lin1 >= tam || col1 < 0 || col1 >= tam) {
-            printf("\nPosição inválida! Pressione ENTER...");
-            getchar();
-            getchar();
-            continue;
-        }
-        
-        if(msave[lin1][col1] != '?') {
-            printf("\nEssa carta já foi descoberta! Pressione ENTER...");
-            getchar();
-            getchar();
-            continue;
-        }
-        
-        break;
-    }
-    
-    // Revela primeira carta
-    msave[lin1][col1] = cartas[lin1][col1];
-    mostraTabuleiro(tam, jogador->pontos);
-    printf("Primeira carta: [%c]\n", cartas[lin1][col1]);
-    sleep(1);
-    
-    // === ESCOLHE SEGUNDA CARTA ===
-    while(1) {
-        printf("\n%s, escolha a SEGUNDA carta:\n", jogador->nome);
-        printf("Linha (a-%c): ", 'a' + tam - 1);
-        scanf(" %c", &letraLin);
-        printf("Coluna (0-%d): ", tam - 1);
-        scanf("%d", &col2);
-        
-        lin2 = converteLetra(letraLin);
-        
-        // Validações
-        if(lin2 < 0 || lin2 >= tam || col2 < 0 || col2 >= tam) {
-            printf("\nPosição inválida! Tente novamente...");
-            sleep(1);
-            mostraTabuleiro(tam, jogador->pontos);
-            printf("Primeira carta: [%c] na posição %c%d\n", 
-                   cartas[lin1][col1], 'a' + lin1, col1);
-            continue;
-        }
-        
-        if(msave[lin2][col2] != '?') {
-            printf("\nEssa carta já foi descoberta! Tente novamente...");
-            sleep(1);
-            mostraTabuleiro(tam, jogador->pontos);
-            printf("Primeira carta: [%c] na posição %c%d\n", 
-                   cartas[lin1][col1], 'a' + lin1, col1);
-            continue;
-        }
-        
-        if(lin1 == lin2 && col1 == col2) {
-            printf("\nEscolha uma carta DIFERENTE! Tente novamente...");
-            sleep(1);
-            mostraTabuleiro(tam, jogador->pontos);
-            printf("Primeira carta: [%c] na posição %c%d\n", 
-                   cartas[lin1][col1], 'a' + lin1, col1);
-            continue;
-        }
-        
-        break;
-    }
-    
-    // Revela segunda carta
-    msave[lin2][col2] = cartas[lin2][col2];
-    mostraTabuleiro(tam, jogador->pontos);
-    printf("Primeira carta: [%c] na posição %c%d\n", 
-           cartas[lin1][col1], 'a' + lin1, col1);
-    printf("Segunda carta: [%c] na posição %c%d\n", 
-           cartas[lin2][col2], 'a' + lin2, col2);
-    sleep(2);
-    
-    // === VERIFICA SE ACERTOU ===
-    if(cartas[lin1][col1] == cartas[lin2][col2]) {
-        printf("\n✓ ACERTOU! +10 pontos\n");
-        jogador->pontos += 10;
-        printf("\nPressione ENTER para continuar...");
-        getchar();
-        getchar();
-        return 1;
-    } else {
-        printf("\n✗ ERROU! -10 pontos\n");
-        jogador->pontos -= 10;
-        
-        // Esconde as cartas novamente
-        msave[lin1][col1] = '?';
-        msave[lin2][col2] = '?';
-        
-        printf("\nPressione ENTER para continuar...");
-        getchar();
-        getchar();
-        return 0;
-    }
-}
-
-void loopJogo(Player *jogador, int tam) {
-    int paresEncontrados = 0;
-    int totalPares = (tam * tam) / 2;
-    
-    while(1) {
-        // Verifica condições de fim
-        if(jogador->pontos <= 0) {
-            mostraTabuleiro(tam, jogador->pontos);
-            printf("\n=== GAME OVER! ===\n");
-            printf("Seus pontos chegaram a zero!\n");
-            break;
-        }
-        
-        if(paresEncontrados >= totalPares) {
-            mostraTabuleiro(tam, jogador->pontos);
-            printf("\n=== PARABÉNS! VOCÊ VENCEU! ===\n");
-            printf("Todos os pares foram encontrados!\n");
-            break;
-        }
-        
-        // Executa um turno
-        int acertou = turno(jogador, tam);
-        if(acertou) {
-            paresEncontrados++;
-        }
-    }
-}
-
-void finalizaJogo(Player *jogador, int tam) {
-    printf("\n========== FIM DE JOGO ==========\n");
-    printf("Jogador: %s\n", jogador->nome);
-    printf("Pontuação final: %d pontos\n", jogador->pontos);
-    
-    // Atualiza pontuação no arquivo
-    FILE *lista = fopen("lista.txt", "r");
-    FILE *temp = fopen("temp.txt", "w");
-    
-    if(!lista || !temp) {
-        printf("Erro ao atualizar pontuação!\n");
-        if(lista) fclose(lista);
-        if(temp) fclose(temp);
-        liberaMemoria(tam);
+// Mostra o ranking
+void mostrarRanking() {
+    FILE *f = fopen("lista.txt", "r");
+    if (!f) {
+        printf("\nNenhum jogador cadastrado ainda!\n");
         return;
     }
     
-    char nomeLido[80];
-    int pontosLido;
-    bool atualizado = false;
+    Player lista[100];
+    int total = 0;
     
-    while(fscanf(lista, "%79s %d", nomeLido, &pontosLido) == 2) {
-        if(strcmp(nomeLido, jogador->nome) == 0) {
-            // Atualiza SE a pontuação for maior que o recorde
-            if(jogador->pontos > pontosLido) {
-                fprintf(temp, "%s %d\n", jogador->nome, jogador->pontos);
-                printf("\n🎉 NOVO RECORDE PESSOAL! %d -> %d pontos!\n", 
-                       pontosLido, jogador->pontos);
-                atualizado = true;
-            } else {
-                fprintf(temp, "%s %d\n", nomeLido, pontosLido);
-                printf("\nSeu recorde continua sendo: %d pontos\n", pontosLido);
+    while (fscanf(f, "%79s %d", lista[total].nome, &lista[total].pontos) == 2) {
+        total++;
+        if (total >= 100) break;
+    }
+    fclose(f);
+    
+    // Ordena por pontos (bubble sort)
+    for (int i = 0; i < total - 1; i++) {
+        for (int j = 0; j < total - i - 1; j++) {
+            if (lista[j].pontos < lista[j+1].pontos) {
+                Player temp = lista[j];
+                lista[j] = lista[j+1];
+                lista[j+1] = temp;
             }
-        } else {
-            fprintf(temp, "%s %d\n", nomeLido, pontosLido);
         }
     }
     
-    fclose(lista);
-    fclose(temp);
-    
-    // Substitui o arquivo original
-    remove("lista.txt");
-    rename("temp.txt", "lista.txt");
-    
-    // Libera memória
-    liberaMemoria(tam);
-    
-    printf("\nPressione ENTER para voltar ao menu...");
-    getchar();
-    getchar();
+    printf("\n========== TOP 10 ==========\n\n");
+    int limite = (total < 10) ? total : 10;
+    for (int i = 0; i < limite; i++) {
+        printf("%2d. %-20s %d pontos\n", i+1, lista[i].nome, lista[i].pontos);
+    }
 }
 
-void dificuldade(Player *jogador) {
-    int modo, tam;
+// ==================== FUNCOES DO TABULEIRO ====================
+
+// Cria e inicializa o tabuleiro
+void criarTabuleiro(int tam) {
+    cartas = malloc(tam * sizeof(char*));
+    visivel = malloc(tam * sizeof(char*));
     
-    system("cls");
-    printf("\n=== ESCOLHA A DIFICULDADE ===\n");
-    printf("1 -> Fácil (4x4 = 8 pares)\n");
-    printf("2 -> Normal (6x6 = 18 pares)\n");
-    printf("3 -> Difícil (8x8 = 32 pares)\n");
-    printf("4 -> Impossível (10x10 = 50 pares)\n");
-    printf("\nOpção: ");
-    scanf("%d", &modo);
+    for (int i = 0; i < tam; i++) {
+        cartas[i] = malloc(tam * sizeof(char));
+        visivel[i] = malloc(tam * sizeof(char));
+        memset(cartas[i], 0, tam);
+        memset(visivel[i], '?', tam);
+    }
     
-    switch(modo) {
+    // Preenche com pares aleatorios
+    srand(time(NULL));
+    int idx = 0;
+    
+    for (int count = 0; count < tam * tam; count++) {
+        int i, j;
+        do {
+            i = rand() % tam;
+            j = rand() % tam;
+        } while (cartas[i][j] != 0);
+        
+        cartas[i][j] = simbolos[idx];
+        
+        if (count % 2 == 1) idx++;
+        if (idx >= (int)strlen(simbolos)) idx = 0;
+    }
+}
+
+// Mostra o tabuleiro
+void mostrarTabuleiro(int tam, Player jogadores[], int numJogadores) {
+    system(LIMPAR);
+    
+    printf("\n========== JOGO DA MEMORIA ==========\n\n");
+    
+    // Info dos jogadores
+    for (int p = 0; p < numJogadores; p++) {
+        printf("%s: %d pontos", jogadores[p].nome, jogadores[p].pontos);
+        if (numJogadores > 1) {
+            printf(" (%d pares)", jogadores[p].paresEncontrados);
+        }
+        printf("\n");
+    }
+    printf("\n");
+    
+    // Cabecalho
+    printf("    ");
+    for (int j = 0; j < tam; j++) {
+        printf(" %d  ", j);
+    }
+    printf("\n");
+    
+    // Tabuleiro
+    for (int i = 0; i < tam; i++) {
+        printf(" %c  ", 'a' + i);
+        for (int j = 0; j < tam; j++) {
+            printf("[%c] ", visivel[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+// Libera memoria
+void destruirTabuleiro(int tam) {
+    for (int i = 0; i < tam; i++) {
+        free(cartas[i]);
+        free(visivel[i]);
+    }
+    free(cartas);
+    free(visivel);
+}
+
+// Mostra cartas para memorizacao
+void mostrarMemorizacao(int tam) {
+    printf("\n========== MEMORIZE! ==========\n\n");
+    
+    printf("    ");
+    for (int j = 0; j < tam; j++) {
+        printf(" %d  ", j);
+    }
+    printf("\n");
+    
+    for (int i = 0; i < tam; i++) {
+        printf(" %c  ", 'a' + i);
+        for (int j = 0; j < tam; j++) {
+            printf("[%c] ", cartas[i][j]);
+        }
+        printf("\n");
+    }
+    
+    printf("\n");
+    for (int i = 15; i > 0; i--) {
+        printf("\rEscondendo em %d...", i);
+        fflush(stdout);
+        SLEEP(1);
+    }
+    printf("\rEscondendo em 0...\n");
+    SLEEP(1);
+}
+
+// ==================== LOOP PRINCIPAL ====================
+
+// Converte letra para indice
+int letraParaIndice(char c) {
+    if (c >= 'a' && c <= 'z') return c - 'a';
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    return -1;
+}
+
+// Le uma posicao valida
+void lerPosicao(int tam, int *lin, int *col, const char *msg) {
+    char buffer[100];
+    char letra;
+    
+    while (1) {
+        printf("%s\n", msg);
+        printf("Linha (a-%c): ", 'a' + tam - 1);
+        lerLinha(buffer, sizeof(buffer));
+        letra = buffer[0];
+        
+        printf("Coluna (0-%d): ", tam - 1);
+        *col = lerInt();
+        
+        *lin = letraParaIndice(letra);
+        
+        if (*lin < 0 || *lin >= tam || *col < 0 || *col >= tam) {
+            printf("\nPosicao invalida!\n");
+            SLEEP(1);
+            continue;
+        }
+        
+        if (visivel[*lin][*col] != '?') {
+            printf("\nCarta ja descoberta!\n");
+            SLEEP(1);
+            continue;
+        }
+        
+        break;
+    }
+}
+
+// Loop do jogo (funciona para 1 ou 2 jogadores)
+void jogar(Player jogadores[], int numJogadores, int tam, bool permitirSave) {
+    int totalPares = (tam * tam) / 2;
+    int vezDe = 0;
+    
+    // CRITICO: Inicializa IMEDIATAMENTE no inicio
+    for (int i = 0; i < numJogadores; i++) {
+        // Se pontos esta zerado OU tem lixo (valor absurdo), inicializa
+        if (jogadores[i].pontos <= 0 || jogadores[i].pontos > 10000) {
+            jogadores[i].pontos = 100;
+        }
+        // Sempre reseta pares (contador do jogo atual)
+        if (jogadores[i].paresEncontrados < 0 || jogadores[i].paresEncontrados > 100) {
+            jogadores[i].paresEncontrados = 0;
+        }
+    }
+    
+    // Loop principal
+    while (1) {
+        Player *atual = &jogadores[vezDe];
+        
+        // Verifica se perdeu por falta de pontos
+        if (atual->pontos <= 0) {
+            mostrarTabuleiro(tam, jogadores, numJogadores);
+            printf("\n%s ficou sem pontos!\n", atual->nome);
+            
+            if (numJogadores > 1) {
+                Player *outro = &jogadores[1 - vezDe];
+                printf("\n*** %s VENCEU! ***\n", outro->nome);
+            } else {
+                printf("\n*** GAME OVER ***\n");
+                if (permitirSave) deletarSave();
+            }
+            break;
+        }
+        
+        // Verifica se todos os pares foram encontrados
+        int totalEncontrados = 0;
+        for (int i = 0; i < numJogadores; i++) {
+            totalEncontrados += jogadores[i].paresEncontrados;
+        }
+        
+        if (totalEncontrados >= totalPares) {
+            mostrarTabuleiro(tam, jogadores, numJogadores);
+            printf("\n========== FIM DE JOGO ==========\n");
+            
+            if (numJogadores == 1) {
+                printf("\n*** VOCE VENCEU! ***\n");
+                printf("Pontuacao final: %d pontos\n", jogadores[0].pontos);
+                if (permitirSave) deletarSave();
+            } else {
+                // Determina vencedor
+                printf("\n");
+                for (int i = 0; i < numJogadores; i++) {
+                    printf("%s: %d pares, %d pontos\n", 
+                           jogadores[i].nome, 
+                           jogadores[i].paresEncontrados,
+                           jogadores[i].pontos);
+                }
+                
+                if (jogadores[0].paresEncontrados > jogadores[1].paresEncontrados) {
+                    printf("\n*** %s VENCEU! ***\n", jogadores[0].nome);
+                } else if (jogadores[1].paresEncontrados > jogadores[0].paresEncontrados) {
+                    printf("\n*** %s VENCEU! ***\n", jogadores[1].nome);
+                } else {
+                    // Empate em pares, decide por pontos
+                    if (jogadores[0].pontos > jogadores[1].pontos) {
+                        printf("\n*** %s VENCEU por pontos! ***\n", jogadores[0].nome);
+                    } else if (jogadores[1].pontos > jogadores[0].pontos) {
+                        printf("\n*** %s VENCEU por pontos! ***\n", jogadores[1].nome);
+                    } else {
+                        printf("\n*** EMPATE TOTAL! ***\n");
+                    }
+                }
+            }
+            break;
+        }
+        
+        // Mostra tabuleiro com opcao de salvar (apenas single player)
+        mostrarTabuleiro(tam, jogadores, numJogadores);
+        if (numJogadores == 1 && permitirSave) {
+            printf("Digite 'S' para salvar e sair, ou pressione ENTER para continuar\n");
+            char buffer[10];
+            lerLinha(buffer, sizeof(buffer));
+            
+            if (buffer[0] == 'S' || buffer[0] == 's') {
+                salvarJogo(&jogadores[0], tam);
+                destruirTabuleiro(tam);
+                pausar();
+                return;
+            }
+        }
+        
+        printf("Vez de: %s\n\n", atual->nome);
+        
+        // Executa turno
+        int lin1, col1, lin2, col2;
+        
+        // Primeira carta
+        lerPosicao(tam, &lin1, &col1, "Escolha a PRIMEIRA carta:");
+        
+        visivel[lin1][col1] = cartas[lin1][col1];
+        mostrarTabuleiro(tam, jogadores, numJogadores);
+        printf("Primeira: [%c] em %c%d\n", cartas[lin1][col1], 'a' + lin1, col1);
+        SLEEP(1);
+        
+        // Segunda carta
+        while (1) {
+            lerPosicao(tam, &lin2, &col2, "\nEscolha a SEGUNDA carta:");
+            
+            if (lin1 == lin2 && col1 == col2) {
+                printf("\nEscolha uma carta DIFERENTE!\n");
+                SLEEP(1);
+                mostrarTabuleiro(tam, jogadores, numJogadores);
+                printf("Primeira: [%c] em %c%d\n", cartas[lin1][col1], 'a' + lin1, col1);
+                continue;
+            }
+            break;
+        }
+        
+        visivel[lin2][col2] = cartas[lin2][col2];
+        mostrarTabuleiro(tam, jogadores, numJogadores);
+        printf("Primeira: [%c] em %c%d\n", cartas[lin1][col1], 'a' + lin1, col1);
+        printf("Segunda:  [%c] em %c%d\n", cartas[lin2][col2], 'a' + lin2, col2);
+        SLEEP(2);
+        
+        // Verifica
+        int acertou = 0;
+        if (cartas[lin1][col1] == cartas[lin2][col2]) {
+            printf("\n*** ACERTOU! ***\n");
+            atual->paresEncontrados++;
+            pausar();
+            acertou = 1;
+        } else {
+            printf("\n*** ERROU! -10 pontos ***\n");
+            atual->pontos -= 10;
+            visivel[lin1][col1] = '?';
+            visivel[lin2][col2] = '?';
+            pausar();
+        }
+        
+        // Alterna jogador se errou (apenas em multiplayer)
+        if (!acertou && numJogadores > 1) {
+            vezDe = 1 - vezDe;
+        }
+    }
+}
+
+// ==================== MENUS ====================
+
+void modoIndividual() {
+    system(LIMPAR);
+    
+    char nome[80];
+    printf("\n========== MODO INDIVIDUAL ==========\n\n");
+    printf("Nome do jogador: ");
+    lerLinha(nome, sizeof(nome));
+    
+    Player jogador = carregarJogador(nome);
+    
+    // Zera pares e pontos para jogo novo
+    jogador.pontos = 0;
+    jogador.paresEncontrados = 0;
+    
+    printf("\n=== DIFICULDADE ===\n");
+    printf("1 - Facil (4x4)\n");
+    printf("2 - Normal (6x6)\n");
+    printf("3 - Dificil (8x8)\n");
+    printf("4 - Impossivel (10x10)\n");
+    printf("\nEscolha: ");
+    
+    int opcao = lerInt();
+    int tam;
+    
+    switch (opcao) {
         case 1: tam = 4; break;
         case 2: tam = 6; break;
         case 3: tam = 8; break;
         case 4: tam = 10; break;
         default:
-            printf("Opção inválida!\n");
-            sleep(2);
+            printf("Opcao invalida!\n");
+            SLEEP(2);
             return;
     }
     
-    system("cls");
+    system(LIMPAR);
     printf("\n=== REGRAS ===\n");
-    printf("• Você começa com 100 pontos\n");
-    printf("• Cada acerto: +10 pontos\n");
-    printf("• Cada erro: -10 pontos\n");
-    printf("• Se os pontos chegarem a 0, você perde!\n");
-    printf("\nPressione ENTER para começar...");
-    getchar();
-    getchar();
+    printf("- Voce comeca com 100 pontos\n");
+    printf("- Acerto: mantem pontos\n");
+    printf("- Erro: -10 pontos\n");
+    printf("- Zerar = Game Over\n");
+    pausar();
     
-    // Inicializa pontuação do jogo
-    jogador->pontos = 100;
+    criarTabuleiro(tam);
+    mostrarMemorizacao(tam);
+    jogar(&jogador, 1, tam, true);
     
-    // Sequência do jogo
-    inicializaJogo(tam);
-    loopJogo(jogador, tam);
-    finalizaJogo(jogador, tam);
+    if (jogador.pontos > 0) {
+        salvarRecorde(&jogador);
+    }
+    
+    destruirTabuleiro(tam);
+    pausar();
 }
 
-void mostrarRanking() {
-    system("cls");
-    printf("\n=== RANKING - TOP 10 ===\n\n");
+void continuarJogo() {
+    system(LIMPAR);
     
-    FILE *lista = fopen("lista.txt", "r");
-    if(!lista) {
-        printf("Nenhum jogador cadastrado ainda!\n");
-        printf("\nPressione ENTER para voltar...");
-        getchar();
-        getchar();
+    if (!existeSave()) {
+        printf("\nNenhum jogo salvo encontrado!\n");
+        pausar();
         return;
     }
     
-    // Lê todos os jogadores
-    Player players[100];
-    int total = 0;
+    Player jogador;
+    int tam;
     
-    while(fscanf(lista, "%79s %d", players[total].nome, &players[total].pontos) == 2) {
-        total++;
-        if(total >= 100) break;
+    if (!carregarJogo(&jogador, &tam)) {
+        printf("\nErro ao carregar o jogo salvo!\n");
+        pausar();
+        return;
     }
-    fclose(lista);
     
-    // Ordena por pontos (bubble sort simples)
-    for(int i = 0; i < total - 1; i++) {
-        for(int j = 0; j < total - i - 1; j++) {
-            if(players[j].pontos < players[j+1].pontos) {
-                Player temp = players[j];
-                players[j] = players[j+1];
-                players[j+1] = temp;
-            }
+    printf("\n========== JOGO CARREGADO ==========\n");
+    printf("Jogador: %s\n", jogador.nome);
+    printf("Pontos: %d\n", jogador.pontos);
+    printf("Pares encontrados: %d\n", jogador.paresEncontrados);
+    printf("\nVamos relembrar as cartas...\n");
+    pausar();
+    
+    // Marca que eh um save (pontos > 0) para nao resetar paresEncontrados
+    int pontosBackup = jogador.pontos;
+    int paresBackup = jogador.paresEncontrados;
+    
+    // Salva o estado visivel atual
+    char **visivelTemp = malloc(tam * sizeof(char*));
+    for (int i = 0; i < tam; i++) {
+        visivelTemp[i] = malloc(tam * sizeof(char));
+        for (int j = 0; j < tam; j++) {
+            visivelTemp[i][j] = visivel[i][j];
         }
     }
     
-    // Mostra top 10
-    int limite = (total < 10) ? total : 10;
-    for(int i = 0; i < limite; i++) {
-        printf("%2d. %-20s %d pontos\n", i+1, players[i].nome, players[i].pontos);
+    // Mostra todas as cartas temporariamente
+    mostrarMemorizacao(tam);
+    
+    // Restaura o estado visivel anterior (cartas ja descobertas)
+    for (int i = 0; i < tam; i++) {
+        for (int j = 0; j < tam; j++) {
+            visivel[i][j] = visivelTemp[i][j];
+        }
+        free(visivelTemp[i]);
+    }
+    free(visivelTemp);
+    
+    // Restaura valores que podem ter sido resetados
+    jogador.pontos = pontosBackup;
+    jogador.paresEncontrados = paresBackup;
+    
+    jogar(&jogador, 1, tam, true);
+    
+    if (jogador.pontos > 0) {
+        salvarRecorde(&jogador);
     }
     
-    printf("\nPressione ENTER para voltar...");
-    getchar();
-    getchar();
+    destruirTabuleiro(tam);
+    pausar();
 }
 
+void modoMultiplayer() {
+    system(LIMPAR);
+    
+    Player jogadores[2] = {0}; // Inicializa tudo com zeros
+    
+    printf("\n========== MODO 2 JOGADORES ==========\n\n");
+    
+    printf("Nome do Jogador 1: ");
+    lerLinha(jogadores[0].nome, sizeof(jogadores[0].nome));
+    jogadores[0].pontos = 100;
+    jogadores[0].paresEncontrados = 0;
+    
+    printf("Nome do Jogador 2: ");
+    lerLinha(jogadores[1].nome, sizeof(jogadores[1].nome));
+    jogadores[1].pontos = 100;
+    jogadores[1].paresEncontrados = 0;
+    
+    printf("\n=== DIFICULDADE ===\n");
+    printf("1 - Facil (4x4)\n");
+    printf("2 - Normal (6x6)\n");
+    printf("3 - Dificil (8x8)\n");
+    printf("4 - Impossivel (10x10)\n");
+    printf("\nEscolha: ");
+    
+    int opcao = lerInt();
+    int tam;
+    
+    switch (opcao) {
+        case 1: tam = 4; break;
+        case 2: tam = 6; break;
+        case 3: tam = 8; break;
+        case 4: tam = 10; break;
+        default:
+            printf("Opcao invalida!\n");
+            SLEEP(2);
+            return;
+    }
+    
+    system(LIMPAR);
+    printf("\n=== REGRAS - 2 JOGADORES ===\n");
+    printf("- Cada um comeca com 100 pontos\n");
+    printf("- Acerto: +1 par e joga de novo\n");
+    printf("- Erro: -10 pontos e passa a vez\n");
+    printf("- Vence quem fizer mais pares\n");
+    pausar();
+    
+    criarTabuleiro(tam);
+    mostrarMemorizacao(tam);
+    jogar(jogadores, 2, tam, false);
+    destruirTabuleiro(tam);
+    pausar();
+}
+
+// ==================== MAIN ====================
+
 int main() {
-    int menu;
+    int opcao;
     
     do {
-        system("cls");
-        printf("\n=================================\n");
-        printf("     JOGO DA MEMORIA - MENU\n");
-        printf("=================================\n");
-        printf("1 -> Modo Individual\n");
-        printf("2 -> Modo 2 Jogadores (em breve)\n");
-        printf("3 -> Ranking\n");
-        printf("4 -> Sair\n");
-        printf("\nEscolha uma opção: ");
-        scanf("%d", &menu);
+        system(LIMPAR);
+        printf("\n================================\n");
+        printf("      JOGO DA MEMORIA\n");
+        printf("================================\n");
         
-        switch(menu) {
-            case 1:
-                getchar();
-                Player jogador = login();
-                dificuldade(&jogador);
-                break;
-                
-            case 2:
-                printf("\nModo 2 jogadores ainda não implementado!\n");
-                printf("Pressione ENTER...");
-                getchar();
-                getchar();
-                break;
-                
-            case 3:
-                getchar();
-                mostrarRanking();
-                break;
-                
-            case 4:
-                printf("\nObrigado por jogar! Até logo!\n");
-                break;
-                
-            default:
-                printf("\nOpção inválida!\n");
-                sleep(1);
-                break;
+        // Verifica se existe save
+        if (existeSave()) {
+            printf("1 - Continuar jogo salvo\n");
+            printf("2 - Novo jogo individual\n");
+            printf("3 - Modo 2 Jogadores\n");
+            printf("4 - Ranking\n");
+            printf("5 - Sair\n");
+        } else {
+            printf("1 - Modo Individual\n");
+            printf("2 - Modo 2 Jogadores\n");
+            printf("3 - Ranking\n");
+            printf("4 - Sair\n");
         }
-    } while(menu != 4);
+        
+        printf("\nEscolha: ");
+        opcao = lerInt();
+        
+        // Menu adaptativo baseado em save
+        if (existeSave()) {
+            switch (opcao) {
+                case 1:
+                    continuarJogo();
+                    break;
+                case 2:
+                    modoIndividual();
+                    break;
+                case 3:
+                    modoMultiplayer();
+                    break;
+                case 4:
+                    system(LIMPAR);
+                    mostrarRanking();
+                    pausar();
+                    break;
+                case 5:
+                    printf("\nObrigado por jogar!\n");
+                    break;
+                default:
+                    printf("\nOpcao invalida!\n");
+                    SLEEP(1);
+            }
+        } else {
+            switch (opcao) {
+                case 1:
+                    modoIndividual();
+                    break;
+                case 2:
+                    modoMultiplayer();
+                    break;
+                case 3:
+                    system(LIMPAR);
+                    mostrarRanking();
+                    pausar();
+                    break;
+                case 4:
+                    printf("\nObrigado por jogar!\n");
+                    break;
+                default:
+                    printf("\nOpcao invalida!\n");
+                    SLEEP(1);
+            }
+        }
+    } while ((existeSave() && opcao != 5) || (!existeSave() && opcao != 4));
     
     return 0;
 }
